@@ -1,0 +1,13 @@
+.env
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+*.db
+backend/local-videos/
+node_modules/
+.next/
+out/
+coverage/
+*.tsbuildinfo
