@@ -76,6 +76,19 @@ class VideoUpload(Base):
     analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
     robot_tracks: Mapped[list["RobotTrack"]] = relationship(back_populates="video", cascade="all, delete-orphan")
+    field_robots: Mapped[list["VideoFieldRobot"]] = relationship(back_populates="video", cascade="all, delete-orphan")
+
+
+class VideoFieldRobot(Base):
+    __tablename__ = "video_field_robots"
+    __table_args__ = (UniqueConstraint("video_id", "team_number", name="uq_video_field_robot_team"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    video_id: Mapped[str] = mapped_column(ForeignKey("video_uploads.id", ondelete="CASCADE"), nullable=False, index=True)
+    team_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    team_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    alliance: Mapped[str] = mapped_column(String(8), nullable=False)
+    video: Mapped[VideoUpload] = relationship(back_populates="field_robots")
 
 
 class EventAnnotation(Base):

@@ -7,14 +7,16 @@ MatchLens is an FTC match-video analysis workspace that runs locally on this com
 Functional now:
 
 - Analysis-oriented web shell with navigation and a real uploaded-match library.
+- FTCScout team directory with local search across all available teams.
 - FastAPI health, upload, playback, annotation, and analysis endpoints.
 - Local MP4 upload with metadata, a 500 MB limit, persistence in SQLite/local disk, playback, listing, and deletion.
 - Manual timestamped event annotations synchronized with the player, including edit, confirm, reject, and delete actions.
+- Per-video manual roster selection from FTCScout, with up to three robot teams per alliance saved alongside the analysis.
 - OpenCV analysis that measures duration, FPS, dimensions, decoded frame count, and frames sampled at roughly 1 Hz.
 - Optional YOLO+ByteTrack detector adapter that persists model-backed track IDs, normalized image-coordinate trajectories, confidence values, and model provenance when configured with custom robot weights.
 - SQLAlchemy models and an initial Alembic migration for teams, memberships, and matches.
 
-Not implemented yet: sign-in, authorization, team/match CRUD, a durable job queue, a trained FTC robot model, calibration, field-coordinate movement metrics, reports, exports, and match comparison. The detector adapter is implemented, but actual robot detections require custom model weights with a configured robot class. Without them the UI explicitly reports detection as unavailable; no robot tracks or events are fabricated.
+Not implemented yet: sign-in, authorization, team membership management, match CRUD, a durable job queue, a trained FTC robot model, calibration, field-coordinate movement metrics, reports, exports, and match comparison. The Teams page fetches the full available FTCScout public directory through the local API and searches the returned team list in the browser. The detector adapter is implemented, but actual robot detections require custom model weights with a configured robot class. Without them the UI explicitly reports detection as unavailable; no robot tracks or events are fabricated.
 
 ## Requirements
 

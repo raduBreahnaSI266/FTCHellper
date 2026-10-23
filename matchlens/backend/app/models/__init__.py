@@ -5,7 +5,8 @@ from app.models.entities import (
 	Team,
 	TeamMembership,
 	TrajectoryPoint,
+	VideoFieldRobot,
 	VideoUpload,
 )
 
-__all__ = ["EventAnnotation", "Match", "RobotTrack", "Team", "TeamMembership", "TrajectoryPoint", "VideoUpload"]
+__all__ = ["EventAnnotation", "Match", "RobotTrack", "Team", "TeamMembership", "TrajectoryPoint", "VideoFieldRobot", "VideoUpload"]

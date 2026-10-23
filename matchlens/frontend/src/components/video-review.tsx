@@ -2,6 +2,7 @@
 
 import { FormEvent, useEffect, useRef, useState } from "react";
 import { Check, Pencil, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
+import { FieldRobots } from "@/components/field-robots";
 import { apiBase } from "@/lib/videos";
 
 const eventOptions = [
@@ -222,6 +223,8 @@ export function VideoReview({ videoId, videoUrl }: { videoId: string; videoUrl: 
       >
         Browserul tău nu poate reda acest videoclip.
       </video>
+
+      <FieldRobots videoId={videoId} />
 
       <div className="timeline-head"><h3>Timeline manual</h3><span>{annotations.length} evenimente · timpul playerului {formatTime(currentTime)}</span></div>
       <form className="annotation-form" onSubmit={saveAnnotation}>

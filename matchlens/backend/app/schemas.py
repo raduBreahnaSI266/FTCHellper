@@ -2,13 +2,52 @@ from datetime import datetime
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class HealthResponse(BaseModel):
     status: str
     mode: str
     supabase_configured: bool
+
+
+class TeamDirectoryEntry(BaseModel):
+    number: int
+    name: str
+
+
+class VideoFieldRobotInput(BaseModel):
+    team_number: int = Field(gt=0)
+    team_name: str = Field(min_length=1, max_length=255)
+    alliance: Literal["Red", "Blue"]
+
+    @field_validator("team_name")
+    @classmethod
+    def validate_team_name(cls, value: str) -> str:
+        name = value.strip()
+        if not name:
+            raise ValueError("Team name cannot be blank.")
+        return name
+
+
+class VideoFieldRobotsUpdate(BaseModel):
+    robots: list[VideoFieldRobotInput] = Field(max_length=6)
+
+    @model_validator(mode="after")
+    def validate_roster(self) -> "VideoFieldRobotsUpdate":
+        team_numbers = [robot.team_number for robot in self.robots]
+        if len(team_numbers) != len(set(team_numbers)):
+            raise ValueError("A team can only appear once in the video roster.")
+        for alliance in ("Red", "Blue"):
+            alliance_count = sum(robot.alliance == alliance for robot in self.robots)
+            if alliance_count > 3:
+                raise ValueError(f"The {alliance.lower()} alliance can have at most three teams.")
+        return self
+
+
+class VideoFieldRobotResponse(VideoFieldRobotInput):
+    id: str
+    video_id: str
 
 
 class VideoUploadResponse(BaseModel):

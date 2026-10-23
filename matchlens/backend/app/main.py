@@ -3,14 +3,15 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
+import httpx
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import EventAnnotation, RobotTrack, TrajectoryPoint, VideoUpload
+from app.models import EventAnnotation, RobotTrack, TrajectoryPoint, VideoFieldRobot, VideoUpload
 from app.schemas import (
     AnnotationCreate,
     AnnotationResponse,
@@ -18,6 +19,9 @@ from app.schemas import (
     HealthResponse,
     RobotTrackResponse,
     TrajectoryPointResponse,
+    TeamDirectoryEntry,
+    VideoFieldRobotResponse,
+    VideoFieldRobotsUpdate,
     VideoAnalysisStartResponse,
     VideoTracksResponse,
     VideoUploadResponse,
@@ -38,7 +42,7 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://127.0.0.1:3000", "http://127.0.0.1:3001"],
-    allow_methods=["GET", "POST", "PATCH", "DELETE"],
+    allow_methods=["GET", "POST", "PATCH", "PUT", "DELETE"],
     allow_headers=["Content-Type"],
 )
 
@@ -46,6 +50,7 @@ storage_dir = Path(settings.local_storage_dir).resolve()
 storage_dir.mkdir(parents=True, exist_ok=True)
 MAX_FILENAME_LENGTH = 255
 CHUNK_SIZE = 1024 * 1024
+FTC_SCOUT_GRAPHQL_URL = "https://api.ftcscout.org/graphql"
 
 
 def serialize_upload(video: VideoUpload) -> VideoUploadResponse:
@@ -100,6 +105,92 @@ def health_check() -> HealthResponse:
         mode=settings.app_mode,
         supabase_configured=settings.supabase_configured,
     )
+
+
+@app.get("/api/v1/teams/directory", response_model=list[TeamDirectoryEntry], tags=["teams"])
+def get_team_directory(search: str | None = Query(default=None, min_length=1, max_length=100)) -> list[TeamDirectoryEntry]:
+    query = "{ teamsSearch(limit: 100000) { number name } }"
+    variables = None
+    if search:
+        query = "query($search: String!) { teamsSearch(limit: 100, searchText: $search) { number name } }"
+        variables = {"search": search.strip()}
+        if not variables["search"]:
+            raise HTTPException(status_code=422, detail="Search text cannot be blank.")
+    graphql_request: dict[str, object] = {"query": query}
+    if variables is not None:
+        graphql_request["variables"] = variables
+    try:
+        response = httpx.post(
+            FTC_SCOUT_GRAPHQL_URL,
+            json=graphql_request,
+            headers={"apollo-require-preflight": "true"},
+            timeout=30.0,
+        )
+        response.raise_for_status()
+        payload = response.json()
+    except httpx.HTTPError as error:
+        logger.exception("FTCScout team directory request failed.")
+        raise HTTPException(status_code=502, detail="FTCScout is currently unavailable.") from error
+    except ValueError as error:
+        logger.exception("FTCScout returned an invalid response.")
+        raise HTTPException(status_code=502, detail="FTCScout returned an invalid response.") from error
+
+    if not isinstance(payload, dict) or payload.get("errors"):
+        logger.warning("FTCScout team directory query returned errors.")
+        raise HTTPException(status_code=502, detail="FTCScout could not provide the team directory.")
+    teams = payload.get("data", {}).get("teamsSearch") if isinstance(payload.get("data"), dict) else None
+    if not isinstance(teams, list):
+        logger.warning("FTCScout response did not contain a team directory.")
+        raise HTTPException(status_code=502, detail="FTCScout returned an invalid team directory.")
+    try:
+        return [TeamDirectoryEntry.model_validate(team) for team in teams]
+    except (TypeError, ValueError) as error:
+        logger.exception("FTCScout returned an invalid team entry.")
+        raise HTTPException(status_code=502, detail="FTCScout returned an invalid team directory.") from error
+
+
+@app.get(
+    "/api/v1/videos/{video_id}/field-robots",
+    response_model=list[VideoFieldRobotResponse],
+    tags=["videos"],
+)
+def list_video_field_robots(video_id: str) -> list[VideoFieldRobotResponse]:
+    with Session(engine) as session:
+        if session.get(VideoUpload, video_id) is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        robots = session.scalars(
+            select(VideoFieldRobot)
+            .where(VideoFieldRobot.video_id == video_id)
+            .order_by(VideoFieldRobot.alliance, VideoFieldRobot.team_number)
+        ).all()
+        return [VideoFieldRobotResponse.model_validate(robot, from_attributes=True) for robot in robots]
+
+
+@app.put(
+    "/api/v1/videos/{video_id}/field-robots",
+    response_model=list[VideoFieldRobotResponse],
+    tags=["videos"],
+)
+def update_video_field_robots(video_id: str, payload: VideoFieldRobotsUpdate) -> list[VideoFieldRobotResponse]:
+    with Session(engine) as session:
+        video = session.get(VideoUpload, video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        session.execute(delete(VideoFieldRobot).where(VideoFieldRobot.video_id == video_id))
+        robots = [
+            VideoFieldRobot(
+                video_id=video_id,
+                team_number=robot.team_number,
+                team_name=robot.team_name.strip(),
+                alliance=robot.alliance,
+            )
+            for robot in payload.robots
+        ]
+        session.add_all(robots)
+        session.commit()
+        for robot in robots:
+            session.refresh(robot)
+        return [VideoFieldRobotResponse.model_validate(robot, from_attributes=True) for robot in robots]
 
 
 @app.get("/api/v1/videos", response_model=list[VideoUploadResponse], tags=["videos"])

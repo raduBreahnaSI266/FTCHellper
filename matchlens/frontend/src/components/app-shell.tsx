@@ -8,7 +8,7 @@ const navigation = [
   { label: "Overview", href: "/", icon: BarChart3 },
   { label: "Matches", href: "/matches", icon: ClipboardList },
   { label: "Analyze Video", href: "/#analysis", icon: Video },
-  { label: "Teams", href: "#", icon: Users },
+  { label: "Teams", href: "/teams", icon: Users },
   { label: "Reports", href: "#", icon: FileText },
   { label: "Settings", href: "#", icon: Settings },
 ];
@@ -25,7 +25,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <div className="workspace-label">Workspace</div>
         <nav className="nav" aria-label="Main navigation">
           {navigation.map(({ label, href, icon: Icon }) => {
-            const active = href === "/" ? pathname === "/" : href === "/matches" && pathname.startsWith("/matches");
+            const active = href === "/" ? pathname === "/" : href !== "/#analysis" && href !== "#" && pathname.startsWith(href);
             return (
               <Link className={active ? "active" : ""} href={href} key={label} aria-current={active ? "page" : undefined}>
                 <Icon aria-hidden="true" />{label}
@@ -33,7 +33,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             );
           })}
         </nav>
-        <div className="sidebar-foot"><FolderKanban size={15} /> Local workspace<br />No team account connected</div>
+        <div className="sidebar-foot"><FolderKanban size={15} /> Local workspace<br />Video files stay on this computer</div>
       </aside>
 
       <main className="main">

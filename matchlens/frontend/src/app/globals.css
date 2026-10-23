@@ -82,6 +82,32 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .match-detail-heading p { margin: 5px 0 0; color: var(--muted); font-size: 11px; overflow-wrap: anywhere; }
 .close-detail { width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 4px; color: var(--muted); background: transparent; cursor: pointer; font-size: 22px; line-height: 1; }
 @keyframes reveal { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+.team-directory-toolbar { display: flex; align-items: center; gap: 14px; margin-bottom: 15px; }
+.team-directory-search { flex: 1; display: flex; align-items: center; gap: 9px; min-width: 180px; height: 42px; padding: 0 12px; border: 1px solid var(--line); border-radius: 4px; background: #151e20; }
+.team-directory-search svg { flex: 0 0 auto; width: 16px; height: 16px; color: var(--muted); }
+.team-directory-search input { width: 100%; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 12px; }
+.team-directory-search input::placeholder { color: #768588; }
+.team-directory-count { min-width: 92px; color: var(--muted); font-size: 11px; text-align: right; }
+.team-grid { height: min(68vh, 680px); min-height: 300px; overflow: auto; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); scrollbar-color: #526569 #151e20; }
+.team-virtual-canvas { position: relative; min-width: 260px; }
+.team-card { position: absolute; inset-inline: 0; display: grid; grid-template-columns: 42px minmax(0, 1fr) 32px; align-items: center; gap: 12px; height: 58px; padding: 0 12px; border-bottom: 1px solid var(--line); background: #151e20; }
+.team-number { display: grid; place-items: center; width: 42px; height: 42px; border: 1px solid #49636a; border-radius: 5px; color: var(--blue); background: #203236; font-size: 12px; font-weight: 700; }
+.team-card-title { min-width: 0; }
+.team-card-title h2 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.team-card-title span, .team-card-meta { color: var(--muted); font-size: 11px; }
+.team-card-title span { display: block; margin-top: 4px; }
+.team-open { display: grid; place-items: center; width: 32px; height: 32px; border: 1px solid var(--line); border-radius: 4px; color: var(--blue); }
+.team-open:hover { border-color: #58747a; color: white; }
+.team-open svg { width: 15px; height: 15px; }
+.team-attribution { margin-top: 17px; color: var(--muted); font-size: 11px; }
+.team-attribution a { color: var(--blue); text-decoration: underline; text-underline-offset: 2px; }
+.team-retry { margin-top: 12px; cursor: pointer; }
+.team-icon-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 32px; padding: 6px 9px; border: 1px solid var(--line); border-radius: 4px; color: #cbd5d2; background: transparent; cursor: pointer; font-size: 11px; }
+.team-icon-button svg { width: 14px; height: 14px; }
+.team-icon-button:hover:not(:disabled) { border-color: #58747a; color: white; }
+.team-icon-button.danger { color: #e2a39a; }
+.team-icon-button:disabled { opacity: .45; cursor: not-allowed; }
+.team-error { margin: 0; color: #ffaaa0; font-size: 12px; }
 .match-name { font-weight: 600; }
 .match-sub { color: var(--muted); font-size: 12px; margin-top: 5px; }
 .meta-label { display: block; color: #78898c; font-size: 10px; text-transform: uppercase; letter-spacing: .07em; margin-bottom: 5px; }
@@ -132,7 +158,33 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .local-player { display: block; width: 100%; max-height: 520px; background: #080b0c; }
 .timeline-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; margin: 16px 0 10px; }
 .timeline-head h3 { margin: 0; font-size: 13px; font-weight: 600; }
+.timeline-head h3 svg { width: 15px; height: 15px; margin-right: 6px; vertical-align: -3px; color: var(--blue); }
 .timeline-head span { color: var(--muted); font-size: 11px; }
+.field-robots { margin: 18px 0; padding: 14px; border: 1px solid var(--line); border-radius: 4px; background: #141d1f; }
+.field-robot-alliances { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.field-robot-alliance { min-width: 0; padding: 11px; border: 1px solid var(--line); border-radius: 4px; background: #101719; }
+.field-robot-alliance h4 { display: flex; justify-content: space-between; gap: 8px; margin: 0 0 8px; color: #9fc9d5; font-size: 11px; font-weight: 600; }
+.field-robot-alliance.red h4 { color: #e3a39a; }
+.field-robot-alliance h4 span { color: var(--muted); font-weight: 400; }
+.field-robot-empty { margin: 8px 0 0; color: var(--muted); font-size: 11px; }
+.field-robot-list, .field-robot-results { margin: 0; padding: 0; list-style: none; }
+.field-robot-list li { display: flex; align-items: center; gap: 8px; min-width: 0; padding: 5px 0; border-top: 1px solid #293639; }
+.field-robot-number { flex: 0 0 auto; color: var(--lime); font-size: 11px; font-weight: 700; }
+.field-robot-name { flex: 1; overflow: hidden; color: #cbd5d2; font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+.field-robot-list .icon-button { flex: 0 0 auto; width: 28px; height: 28px; }
+.field-robot-list .icon-button svg { width: 13px; height: 13px; }
+.field-robot-editor { display: grid; grid-template-columns: 150px minmax(0, 1fr); gap: 9px; margin-top: 12px; }
+.field-robot-alliance-select { display: grid; gap: 5px; color: #aab8b8; font-size: 10px; }
+.field-robot-alliance-select select, .field-robot-search { min-width: 0; height: 37px; border: 1px solid #405053; border-radius: 3px; background: #101719; color: var(--text); }
+.field-robot-alliance-select select { padding: 0 8px; font-size: 11px; }
+.field-robot-search { display: flex; align-items: center; gap: 8px; padding: 0 9px; align-self: end; }
+.field-robot-search > svg { flex: 0 0 auto; width: 14px; height: 14px; color: var(--muted); }
+.field-robot-search input { flex: 1; width: 100%; min-width: 0; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; }
+.field-robot-results { max-height: 220px; margin-top: 6px; overflow: auto; border: 1px solid var(--line); border-radius: 3px; background: #101719; }
+.field-robot-results li { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 38px; padding: 4px 8px; border-bottom: 1px solid #293639; color: #cbd5d2; font-size: 11px; }
+.field-robot-results li:last-child { border-bottom: 0; }
+.field-robot-results .subtle-button { flex: 0 0 auto; padding: 5px 7px; }
+.field-robot-results .subtle-button svg { width: 13px; height: 13px; }
 .annotation-form { display: grid; grid-template-columns: 1.4fr .7fr .8fr .9fr 1.5fr; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 4px; background: #141d1f; }
 .annotation-form label { display: grid; gap: 5px; color: #aab8b8; font-size: 11px; }
 .annotation-form input, .annotation-form select { width: 100%; min-width: 0; min-height: 34px; padding: 7px 8px; border: 1px solid #405053; border-radius: 3px; background: #101719; color: var(--text); font-size: 12px; }
@@ -186,6 +238,9 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
   .video-item-actions { width: 100%; justify-content: space-between; }
   .video-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .annotation-form { grid-template-columns: 1fr 1fr; }
+  .field-robot-alliances { grid-template-columns: 1fr; }
+  .field-robot-editor { grid-template-columns: 1fr; }
+  .field-robot-search { align-self: auto; }
   .annotation-note { grid-column: 1 / -1; }
   .annotation-row { grid-template-columns: 65px minmax(0, 1fr); }
   .annotation-actions { grid-column: 1 / -1; justify-content: flex-end; }
@@ -194,6 +249,8 @@ h2 { font-size: 14px; font-weight: 600; margin: 0; }
   .trajectory-plot { max-width: 340px; }
   .matches-toolbar { align-items: stretch; flex-wrap: wrap; }
   .match-search { flex-basis: 100%; }
+  .team-directory-toolbar { align-items: stretch; flex-direction: column; }
+  .team-directory-count { text-align: left; }
   .filter-select { flex: 1; justify-content: space-between; }
   .match-count { align-self: center; }
   .matches-table-head, .matches-table-row { grid-template-columns: minmax(0, 1fr) auto; gap: 7px 12px; }

@@ -33,6 +33,119 @@ def test_synthetic_demo_endpoint_is_removed() -> None:
     assert client.get("/api/v1/demo/overview").status_code == 404
 
 
+def test_team_directory_uses_ftcscout_and_validates_results(monkeypatch) -> None:
+    upstream = api_module.httpx.Response(
+        200,
+        json={"data": {"teamsSearch": [{"number": 12345, "name": "Local FTC Team"}]}},
+        request=api_module.httpx.Request("POST", api_module.FTC_SCOUT_GRAPHQL_URL),
+    )
+    requests = []
+
+    def fake_post(url, **kwargs):
+        requests.append((url, kwargs))
+        return upstream
+
+    monkeypatch.setattr(api_module.httpx, "post", fake_post)
+    response = client.get("/api/v1/teams/directory")
+
+    assert response.status_code == 200
+    assert response.json() == [{"number": 12345, "name": "Local FTC Team"}]
+    assert requests[0][0] == "https://api.ftcscout.org/graphql"
+    assert "teamsSearch(limit: 100000)" in requests[0][1]["json"]["query"]
+
+
+def test_team_directory_reports_upstream_graphql_errors(monkeypatch) -> None:
+    upstream = api_module.httpx.Response(
+        200,
+        json={"errors": [{"message": "Upstream unavailable"}]},
+        request=api_module.httpx.Request("POST", api_module.FTC_SCOUT_GRAPHQL_URL),
+    )
+    monkeypatch.setattr(api_module.httpx, "post", lambda *args, **kwargs: upstream)
+
+    response = client.get("/api/v1/teams/directory")
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "FTCScout could not provide the team directory."
+
+
+def test_team_directory_search_for_video_roster(monkeypatch) -> None:
+    upstream = api_module.httpx.Response(
+        200,
+        json={"data": {"teamsSearch": [{"number": 123, "name": "Search Result"}]}},
+        request=api_module.httpx.Request("POST", api_module.FTC_SCOUT_GRAPHQL_URL),
+    )
+    requests = []
+
+    def fake_post(url, **kwargs):
+        requests.append(kwargs["json"])
+        return upstream
+
+    monkeypatch.setattr(api_module.httpx, "post", fake_post)
+    response = client.get("/api/v1/teams/directory", params={"search": "123"})
+
+    assert response.status_code == 200
+    assert response.json() == [{"number": 123, "name": "Search Result"}]
+    assert requests[0]["variables"] == {"search": "123"}
+    assert "searchText: $search" in requests[0]["query"]
+
+
+def test_video_field_robots_can_be_saved_and_replaced() -> None:
+    mp4_header = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00"
+    upload = client.post(
+        "/api/v1/videos",
+        data={"event_name": "Local Test", "season": "2025-2026", "match_number": "3", "alliance": "Blue"},
+        files={"file": ("match.mp4", mp4_header, "video/mp4")},
+    )
+    video_id = upload.json()["id"]
+    endpoint = f"/api/v1/videos/{video_id}/field-robots"
+
+    saved = client.put(
+        endpoint,
+        json={
+            "robots": [
+                {"team_number": 12345, "team_name": "Local Blue", "alliance": "Blue"},
+                {"team_number": 54321, "team_name": "Local Red", "alliance": "Red"},
+            ]
+        },
+    )
+
+    assert saved.status_code == 200
+    assert [(robot["team_number"], robot["alliance"]) for robot in saved.json()] == [
+        (12345, "Blue"),
+        (54321, "Red"),
+    ]
+    assert client.get(endpoint).json() == saved.json()
+
+    replaced = client.put(
+        endpoint,
+        json={"robots": [{"team_number": 67890, "team_name": "Replacement", "alliance": "Blue"}]},
+    )
+    assert replaced.status_code == 200
+    assert [robot["team_number"] for robot in client.get(endpoint).json()] == [67890]
+
+
+@pytest.mark.parametrize(
+    "robots",
+    [
+        [{"team_number": 1, "team_name": "Same", "alliance": "Blue"}] * 2,
+        [{"team_number": number, "team_name": str(number), "alliance": "Blue"} for number in range(1, 5)],
+        [{"team_number": number, "team_name": str(number), "alliance": "Red"} for number in range(1, 5)],
+        [{"team_number": number, "team_name": str(number), "alliance": "Blue"} for number in range(1, 7)],
+    ],
+)
+def test_video_field_robots_reject_invalid_roster(robots) -> None:
+    response = client.put(
+        "/api/v1/videos/not-a-video/field-robots",
+        json={"robots": robots},
+    )
+
+    assert response.status_code == 422
+
+
+def test_video_field_robots_returns_not_found_for_unknown_video() -> None:
+    assert client.get("/api/v1/videos/not-a-video/field-robots").status_code == 404
+
+
 def test_upload_valid_mp4_and_playback() -> None:
     mp4_header = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00"
     response = client.post(
