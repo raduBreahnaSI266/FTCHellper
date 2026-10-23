@@ -107,6 +107,19 @@ class EventAnnotation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
 
 
+class RobotFrameLabel(Base):
+    __tablename__ = "robot_frame_labels"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    video_id: Mapped[str] = mapped_column(ForeignKey("video_uploads.id", ondelete="CASCADE"), nullable=False, index=True)
+    timestamp_seconds: Mapped[float] = mapped_column(Float, nullable=False)
+    class_name: Mapped[str] = mapped_column(String(80), nullable=False, default="robot")
+    x1_normalized: Mapped[float] = mapped_column(Float, nullable=False)
+    y1_normalized: Mapped[float] = mapped_column(Float, nullable=False)
+    x2_normalized: Mapped[float] = mapped_column(Float, nullable=False)
+    y2_normalized: Mapped[float] = mapped_column(Float, nullable=False)
+
+
 class RobotTrack(Base):
     __tablename__ = "robot_tracks"
     __table_args__ = (UniqueConstraint("video_id", "source_track_id", name="uq_video_source_track"),)

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useRef, useState } from "react";
+import Image from "next/image";
 import { Check, Pencil, Play, Plus, RotateCcw, Trash2, X } from "lucide-react";
 import { FieldRobots } from "@/components/field-robots";
 import { apiBase } from "@/lib/videos";
@@ -41,7 +42,7 @@ type RobotTrack = {
   id: string;
   source_track_id: string;
   class_name: string;
-  detection_source: "model";
+  detection_source: "model" | "seeded_tracker";
   model_name: string;
   model_version: string;
   confidence_threshold: number;
@@ -52,6 +53,17 @@ type TracksResponse = {
   detector_message: string | null;
   tracks: RobotTrack[];
 };
+type RobotLabel = {
+  id: string;
+  video_id: string;
+  timestamp_seconds: number;
+  class_name: string;
+  x1_normalized: number;
+  y1_normalized: number;
+  x2_normalized: number;
+  y2_normalized: number;
+};
+type RobotBox = Omit<RobotLabel, "id" | "video_id" | "timestamp_seconds">;
 const trackColors = ["#69b8d2", "#c3da74", "#e39a76", "#9b9fe0", "#e6d16f", "#78c9a2"];
 
 function formatTime(seconds: number): string {
@@ -66,10 +78,18 @@ function eventLabel(type: EventType): string {
   return eventOptions.find(([value]) => value === type)?.[1] ?? type;
 }
 
-export function VideoReview({ videoId, videoUrl }: { videoId: string; videoUrl: string }) {
+export function VideoReview({ videoId, videoUrl, videoWidth, videoHeight }: { videoId: string; videoUrl: string; videoWidth?: number | null; videoHeight?: number | null }) {
   const player = useRef<HTMLVideoElement>(null);
+  const labelCanvas = useRef<HTMLCanvasElement>(null);
+  const drawStart = useRef<{ x: number; y: number } | null>(null);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [tracks, setTracks] = useState<RobotTrack[]>([]);
+  const [robotLabels, setRobotLabels] = useState<RobotLabel[]>([]);
+  const [draftBoxes, setDraftBoxes] = useState<RobotBox[]>([]);
+  const [labelMessage, setLabelMessage] = useState("");
+  const [labelBusy, setLabelBusy] = useState(false);
+  const [trackingIndex, setTrackingIndex] = useState<number | null>(null);
+  const [labelMode, setLabelMode] = useState(false);
   const [detectorMessage, setDetectorMessage] = useState("");
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
@@ -81,6 +101,121 @@ export function VideoReview({ videoId, videoUrl }: { videoId: string; videoUrl: 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [saving, setSaving] = useState(false);
+  const labelTimestamp = Math.max(0, Math.round(currentTime * 10) / 10);
+  const savedBoxes = robotLabels.filter((label) => label.timestamp_seconds === labelTimestamp);
+
+  useEffect(() => {
+    let active = true;
+    fetch(`${apiBase}/api/v1/videos/${videoId}/robot-labels`, { cache: "no-store" })
+      .then(async (response) => {
+        if (!response.ok) throw new Error("Etichetele nu au putut fi încărcate.");
+        return await response.json() as RobotLabel[];
+      })
+      .then((labels) => { if (active) setRobotLabels(labels); })
+      .catch(() => { if (active) setLabelMessage("Etichetele locale nu au putut fi încărcate."); });
+    return () => { active = false; };
+  }, [videoId]);
+
+  useEffect(() => {
+    const canvas = labelCanvas.current;
+    if (!canvas) return;
+    const bounds = canvas.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    canvas.width = Math.round(bounds.width * ratio);
+    canvas.height = Math.round(bounds.height * ratio);
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.scale(ratio, ratio);
+    context.clearRect(0, 0, bounds.width, bounds.height);
+    for (const [index, box] of [...savedBoxes, ...draftBoxes].entries()) {
+      const x = box.x1_normalized * bounds.width;
+      const y = box.y1_normalized * bounds.height;
+      const width = (box.x2_normalized - box.x1_normalized) * bounds.width;
+      const height = (box.y2_normalized - box.y1_normalized) * bounds.height;
+      context.strokeStyle = trackColors[index % trackColors.length];
+      context.lineWidth = 2;
+      context.strokeRect(x, y, width, height);
+      context.fillStyle = trackColors[index % trackColors.length];
+      context.font = "12px sans-serif";
+      context.fillText(`robot ${index + 1}`, x + 3, Math.max(12, y - 4));
+    }
+  }, [savedBoxes, draftBoxes, currentTime]);
+
+  function normalizedPointer(event: React.PointerEvent<HTMLCanvasElement>) {
+    const bounds = event.currentTarget.getBoundingClientRect();
+    return {
+      x: Math.min(Math.max((event.clientX - bounds.left) / bounds.width, 0), 1),
+      y: Math.min(Math.max((event.clientY - bounds.top) / bounds.height, 0), 1),
+    };
+  }
+
+  function startBox(event: React.PointerEvent<HTMLCanvasElement>) {
+    const point = normalizedPointer(event);
+    drawStart.current = point;
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function finishBox(event: React.PointerEvent<HTMLCanvasElement>) {
+    const start = drawStart.current;
+    drawStart.current = null;
+    if (!start) return;
+    const end = normalizedPointer(event);
+    const box = {
+      class_name: "robot",
+      x1_normalized: Math.min(start.x, end.x),
+      y1_normalized: Math.min(start.y, end.y),
+      x2_normalized: Math.max(start.x, end.x),
+      y2_normalized: Math.max(start.y, end.y),
+    };
+    if (box.x2_normalized - box.x1_normalized > 0.005 && box.y2_normalized - box.y1_normalized > 0.005) {
+      setDraftBoxes((current) => [...current, box]);
+    }
+  }
+
+  async function saveFrameLabels(boxesToSave = [...savedBoxes, ...draftBoxes]) {
+    setLabelBusy(true);
+    setLabelMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/v1/videos/${videoId}/robot-labels/${labelTimestamp}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ boxes: boxesToSave.map(({ class_name, x1_normalized, y1_normalized, x2_normalized, y2_normalized }) => ({ class_name, x1_normalized, y1_normalized, x2_normalized, y2_normalized })) }),
+      });
+      const result = await response.json() as RobotLabel[] | { detail?: string };
+      if (!response.ok || !Array.isArray(result)) {
+        throw new Error(!Array.isArray(result) ? result.detail : "Etichetele nu au putut fi salvate.");
+      }
+      setRobotLabels((current) => [...current.filter((label) => label.timestamp_seconds !== labelTimestamp), ...result]);
+      setDraftBoxes([]);
+      setLabelMessage("Etichete salvate local.");
+    } catch (saveError) {
+      setLabelMessage(saveError instanceof Error ? saveError.message : "Etichetele nu au putut fi salvate.");
+    } finally {
+      setLabelBusy(false);
+    }
+  }
+
+  async function trackRobot(box: RobotBox, index: number) {
+    setTrackingIndex(index);
+    setLabelMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/v1/videos/${videoId}/robot-labels/${labelTimestamp}/track`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(box),
+      });
+      const result = await response.json() as RobotTrack | { detail?: string };
+      if (!response.ok || !("points" in result)) {
+        throw new Error("detail" in result ? result.detail : "Robotul nu a putut fi urmărit.");
+      }
+      setTracks((current) => [...current, result]);
+      setLabelMessage(`Urmărire locală terminată: ${result.points.length} poziții estimate. Verifică traseul.`);
+    } catch (trackingError) {
+      setLabelMessage(trackingError instanceof Error ? trackingError.message : "Robotul nu a putut fi urmărit.");
+    } finally {
+      setTrackingIndex(null);
+    }
+  }
 
   async function refreshAnnotations() {
     try {
@@ -209,20 +344,61 @@ export function VideoReview({ videoId, videoUrl }: { videoId: string; videoUrl: 
 
   return (
     <div className="video-review">
-      <video
-        ref={player}
-        className="local-player"
-        controls
-        preload="metadata"
-        src={videoUrl}
-        onTimeUpdate={(event) => {
-          const time = event.currentTarget.currentTime;
-          setCurrentTime(time);
-        }}
-        onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
-      >
-        Browserul tău nu poate reda acest videoclip.
-      </video>
+      <div className="label-player-wrap">
+        <video
+          ref={player}
+          className="local-player"
+          controls
+          preload="metadata"
+          src={videoUrl}
+          onTimeUpdate={(event) => {
+            const time = event.currentTarget.currentTime;
+            if (Math.round(time * 10) !== Math.round(currentTime * 10)) setDraftBoxes([]);
+            setCurrentTime(time);
+          }}
+          onLoadedMetadata={(event) => setDuration(event.currentTarget.duration)}
+        >
+          Browserul tău nu poate reda acest videoclip.
+        </video>
+      </div>
+      <div className="label-frame-wrap">
+        <Image
+          className="label-frame-image"
+          src={`${apiBase}/api/v1/videos/${videoId}/frame/${labelTimestamp}?frame=${labelTimestamp}`}
+          alt={`Cadru extras la ${formatTime(labelTimestamp)}`}
+          width={videoWidth || 16}
+          height={videoHeight || 9}
+          unoptimized
+        />
+        <canvas
+          ref={labelCanvas}
+          className={`robot-label-canvas${labelMode ? " active" : ""}`}
+          aria-label="Desenează dreptunghiuri peste roboți pentru etichetare"
+          onPointerDown={startBox}
+          onPointerUp={finishBox}
+          onPointerCancel={() => { drawStart.current = null; }}
+        />
+      </div>
+      <section className="label-tools" aria-label="Etichetare locală pentru antrenare">
+        <div className="label-tools-head"><strong>Etichetează roboții</strong><span>{savedBoxes.length + draftBoxes.length} cutii la {formatTime(labelTimestamp)}</span></div>
+        <label className="label-time-control">Cadru la {formatTime(labelTimestamp)}
+          <input type="range" min="0" max={duration || 1} step="0.5" value={Math.min(labelTimestamp, duration || labelTimestamp)} onChange={(event) => seekTo(Number(event.target.value))} />
+        </label>
+        <div className="label-tools-actions">
+          <button className={`subtle-button${labelMode ? " label-mode-active" : ""}`} type="button" aria-pressed={labelMode} onClick={() => setLabelMode((active) => !active)}>{labelMode ? "Oprește etichetarea" : "Pornește etichetarea"}</button>
+          <button className="subtle-button" type="button" onClick={() => seekTo(Math.max(0, currentTime - 1))}>− 1 sec</button>
+          <button className="subtle-button" type="button" onClick={() => seekTo(Math.min(duration || currentTime + 1, currentTime + 1))}>+ 1 sec</button>
+          <button className="subtle-button" type="button" onClick={() => setDraftBoxes([])} disabled={draftBoxes.length === 0}>Șterge desenele noi</button>
+          <button className="subtle-button" type="button" onClick={() => void saveFrameLabels([])} disabled={labelBusy || savedBoxes.length === 0}>Șterge etichetele cadrului</button>
+          <button className="button" type="button" disabled={labelBusy} onClick={() => void saveFrameLabels()}>{labelBusy ? "Se salvează…" : "Salvează etichetele cadrului"}</button>
+        </div>
+        {[...savedBoxes, ...draftBoxes].map((box, index) => (
+          <button className="subtle-button track-seed-button" key={`${box.x1_normalized}-${box.y1_normalized}-${index}`} type="button" disabled={trackingIndex !== null} onClick={() => void trackRobot(box, index)}>
+            {trackingIndex === index ? "Se urmărește…" : `Urmărește robotul ${index + 1} până la final`}
+          </button>
+        ))}
+        <p>{labelMessage || (labelMode ? "Pauzează videoclipul și trage cu mouse-ul peste fiecare robot." : "Etichetele rămân pe acest calculator. Activează modul de etichetare pentru a desena cutii peste roboți.")}</p>
+      </section>
 
       <FieldRobots videoId={videoId} />
 
@@ -267,7 +443,7 @@ export function VideoReview({ videoId, videoUrl }: { videoId: string; videoUrl: 
               {tracks.map((track, index) => (
                 <li key={track.id}>
                   <span className="track-swatch" style={{ background: trackColors[index % trackColors.length] }} />
-                  <span><strong>{track.class_name} · ID {track.source_track_id}</strong><small>{track.points.length} puncte · model {track.model_name} · v{track.model_version} · prag {(track.confidence_threshold * 100).toFixed(0)}%</small></span>
+                  <span><strong>{track.class_name} · ID {track.source_track_id}</strong><small>{track.points.length} puncte · {track.detection_source === "seeded_tracker" ? "urmărire OpenCV pornită din cutia selectată" : `model ${track.model_name} · v${track.model_version} · prag ${(track.confidence_threshold * 100).toFixed(0)}%`}</small></span>
                 </li>
               ))}
             </ul>

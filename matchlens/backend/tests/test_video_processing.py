@@ -3,6 +3,7 @@ import numpy as np
 
 from app.vision.detector import RobotDetection, create_robot_detector
 from app.vision.processor import VideoProcessingError, analyze_video_file
+from app.vision.seeded_tracker import track_seeded_robot
 
 
 def test_analyze_video_file_measures_metadata_and_samples_frames(tmp_path) -> None:
@@ -93,3 +94,25 @@ def test_detector_factory_reports_unavailable_without_configured_model() -> None
 
     assert detector is None
     assert "No custom robot detector model configured" in message
+
+
+def test_seeded_tracker_tracks_a_robot_in_a_local_video(tmp_path) -> None:
+    video_path = tmp_path / "moving_robot.avi"
+    writer = cv2.VideoWriter(str(video_path), cv2.VideoWriter_fourcc(*"MJPG"), 10.0, (160, 120))
+    assert writer.isOpened()
+    for frame_index in range(30):
+        frame = np.zeros((120, 160, 3), dtype=np.uint8)
+        left = 30 + frame_index
+        cv2.rectangle(frame, (left, 40), (left + 29, 79), (0, 230, 40), -1)
+        cv2.circle(frame, (left + 8, 50), 4, (255, 255, 255), -1)
+        writer.write(frame)
+    writer.release()
+
+    detections, width, height, track_id = track_seeded_robot(video_path, 0.0, (0.18, 0.3, 0.38, 0.68))
+
+    assert width == 160
+    assert height == 120
+    assert track_id.startswith("seed-")
+    assert len(detections) > 1
+    assert detections[0].timestamp_seconds == 0.0
+    assert detections[-1].timestamp_seconds > detections[0].timestamp_seconds

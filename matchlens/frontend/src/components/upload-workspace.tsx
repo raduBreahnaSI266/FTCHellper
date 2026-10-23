@@ -1,7 +1,7 @@
 "use client";
 
 import { ChangeEvent, FormEvent, useEffect, useState } from "react";
-import { FileVideo2, LoaderCircle, Play, RotateCw, Trash2, Upload, Video } from "lucide-react";
+import { Download, FileVideo2, LoaderCircle, Play, RotateCw, Trash2, Upload, Video } from "lucide-react";
 import { VideoReview } from "@/components/video-review";
 import { apiBase, formatBytes, notifyVideosUpdated, VideoUpload } from "@/lib/videos";
 
@@ -18,6 +18,8 @@ export function UploadWorkspace() {
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
+  const [datasetBusy, setDatasetBusy] = useState(false);
+  const [datasetMessage, setDatasetMessage] = useState("");
 
   async function refreshVideos() {
     try {
@@ -133,12 +135,36 @@ export function UploadWorkspace() {
     }
   }
 
+  async function exportDataset() {
+    setDatasetBusy(true);
+    setDatasetMessage("");
+    try {
+      const response = await fetch(`${apiBase}/api/v1/training/dataset.zip`);
+      if (!response.ok) {
+        const result = await response.json() as { detail?: string };
+        throw new Error(result.detail ?? "Datasetul nu a putut fi exportat.");
+      }
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = "matchlens-robot-dataset.zip";
+      link.click();
+      URL.revokeObjectURL(url);
+      setDatasetMessage("Dataset YOLO descărcat. Rulează comanda locală de training din docs/video-processing.md.");
+    } catch (exportError) {
+      setDatasetMessage(exportError instanceof Error ? exportError.message : "Datasetul nu a putut fi exportat.");
+    } finally {
+      setDatasetBusy(false);
+    }
+  }
+
   return (
     <section id="analysis" aria-labelledby="analysis-title">
       <div className="section-head">
         <h2 id="analysis-title">Videoclipuri locale</h2>
-        <span className="section-note">{videos.length} încărcate · pe acest calculator</span>
+        <div className="section-tools"><span className="section-note">{videos.length} încărcate · pe acest calculator</span><button className="subtle-button" type="button" disabled={datasetBusy} onClick={() => void exportDataset()}>{datasetBusy ? <LoaderCircle className="spin" aria-hidden="true" /> : <Download aria-hidden="true" />}{datasetBusy ? "Se exportă" : "Exportă dataset YOLO"}</button></div>
       </div>
+      {datasetMessage && <p className="analysis-message">{datasetMessage}</p>}
 
       <form className="upload-form" onSubmit={submitUpload}>
         <div className="upload-form-title"><FileVideo2 aria-hidden="true" /><div><strong>Încarcă un meci</strong><span>MP4 · maxim 500 MB · stocat local</span></div></div>
@@ -189,7 +215,7 @@ export function UploadWorkspace() {
                   <div><dt>Detector roboți</dt><dd>Indisponibil</dd></div>
                 </dl>
               )}
-              <VideoReview videoId={video.id} videoUrl={`${apiBase}/api/v1/videos/${video.id}/file`} />
+              <VideoReview videoId={video.id} videoUrl={`${apiBase}/api/v1/videos/${video.id}/file`} videoWidth={video.width} videoHeight={video.height} />
             </article>
           ))}
         </div>

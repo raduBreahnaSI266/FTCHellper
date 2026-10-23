@@ -83,6 +83,34 @@ class VideoAnalysisStartResponse(BaseModel):
     message: str
 
 
+class RobotBox(BaseModel):
+    class_name: str = Field(default="robot", min_length=1, max_length=80)
+    x1_normalized: float = Field(ge=0, le=1)
+    y1_normalized: float = Field(ge=0, le=1)
+    x2_normalized: float = Field(gt=0, le=1)
+    y2_normalized: float = Field(gt=0, le=1)
+
+    @model_validator(mode="after")
+    def validate_box(self) -> "RobotBox":
+        if self.x2_normalized <= self.x1_normalized or self.y2_normalized <= self.y1_normalized:
+            raise ValueError("Robot bounding boxes must have positive width and height.")
+        return self
+
+
+class RobotFrameLabelsUpdate(BaseModel):
+    boxes: list[RobotBox] = Field(max_length=50)
+
+
+class RobotTrackStart(RobotBox):
+    pass
+
+
+class RobotFrameLabelResponse(RobotBox):
+    id: str
+    video_id: str
+    timestamp_seconds: float
+
+
 EventType = Literal[
     "autonomous",
     "teleop",
@@ -150,7 +178,7 @@ class RobotTrackResponse(BaseModel):
     id: str
     source_track_id: str
     class_name: str
-    detection_source: Literal["model"]
+    detection_source: Literal["model", "seeded_tracker"]
     model_name: str
     model_version: str
     confidence_threshold: float

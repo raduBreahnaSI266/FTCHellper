@@ -1,4 +1,7 @@
 import pytest
+import zipfile
+from io import BytesIO
+import numpy as np
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 
@@ -27,6 +30,20 @@ def test_health_reports_explicit_local_mode() -> None:
     assert response.status_code == 200
     assert response.json()["mode"] == "local_only"
     assert response.json()["supabase_configured"] is False
+
+
+def test_cors_allows_put_for_local_robot_labels() -> None:
+    response = client.options(
+        "/api/v1/videos/test/robot-labels/1.0",
+        headers={
+            "Origin": "http://127.0.0.1:3001",
+            "Access-Control-Request-Method": "PUT",
+            "Access-Control-Request-Headers": "content-type",
+        },
+    )
+
+    assert response.status_code == 200
+    assert "PUT" in response.headers["access-control-allow-methods"]
 
 
 def test_synthetic_demo_endpoint_is_removed() -> None:
@@ -232,6 +249,105 @@ def test_annotation_rejects_invalid_time_interval() -> None:
     )
 
     assert response.status_code == 422
+
+
+def test_robot_frame_labels_are_saved_and_replaced_per_timestamp() -> None:
+    upload = client.post(
+        "/api/v1/videos",
+        data={"event_name": "Local Test", "season": "2025-2026", "match_number": "3", "alliance": "Blue"},
+        files={"file": ("match.mp4", b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00", "video/mp4")},
+    )
+    video_id = upload.json()["id"]
+    url = f"/api/v1/videos/{video_id}/robot-labels/12.5"
+    boxes = [{"class_name": "robot", "x1_normalized": 0.1, "y1_normalized": 0.2, "x2_normalized": 0.4, "y2_normalized": 0.8}]
+
+    created = client.put(url, json={"boxes": boxes})
+    assert created.status_code == 200
+    assert len(created.json()) == 1
+    assert created.json()[0]["timestamp_seconds"] == 12.5
+    assert client.get(f"/api/v1/videos/{video_id}/robot-labels").json()[0]["class_name"] == "robot"
+
+    replaced = client.put(url, json={"boxes": []})
+    assert replaced.status_code == 200
+    assert replaced.json() == []
+    assert client.get(f"/api/v1/videos/{video_id}/robot-labels").json() == []
+
+
+def test_dataset_export_requires_labeled_frames() -> None:
+    response = client.get("/api/v1/training/dataset.zip")
+
+    assert response.status_code == 409
+    assert "Label robot boxes" in response.json()["detail"]
+
+
+def test_seeded_robot_tracking_persists_local_trajectory(monkeypatch) -> None:
+    upload = client.post(
+        "/api/v1/videos",
+        data={"event_name": "Local Test", "season": "2025-2026", "match_number": "3", "alliance": "Blue"},
+        files={"file": ("match.mp4", b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00", "video/mp4")},
+    )
+    video_id = upload.json()["id"]
+    monkeypatch.setattr(
+        api_module,
+        "track_seeded_robot",
+        lambda *_args: (
+            [
+                RobotDetection("seed-test", "robot", 0.0, 10, 10, 30, 30, 1.0),
+                RobotDetection("seed-test", "robot", 0.0, 20, 15, 40, 35, 2.0),
+            ],
+            100,
+            100,
+            "seed-test",
+        ),
+    )
+
+    response = client.post(
+        f"/api/v1/videos/{video_id}/robot-labels/1.0/track",
+        json={"class_name": "robot", "x1_normalized": 0.1, "y1_normalized": 0.1, "x2_normalized": 0.3, "y2_normalized": 0.3},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["detection_source"] == "seeded_tracker"
+    assert len(response.json()["points"]) == 2
+    assert response.json()["points"][0]["x_normalized"] == 0.2
+    tracks = client.get(f"/api/v1/videos/{video_id}/tracks").json()["tracks"]
+    assert tracks[0]["detection_source"] == "seeded_tracker"
+
+
+def test_dataset_export_writes_yolo_box_coordinates(monkeypatch) -> None:
+    upload = client.post(
+        "/api/v1/videos",
+        data={"event_name": "Local Test", "season": "2025-2026", "match_number": "3", "alliance": "Blue"},
+        files={"file": ("match.mp4", b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00", "video/mp4")},
+    )
+    video_id = upload.json()["id"]
+    client.put(
+        f"/api/v1/videos/{video_id}/robot-labels/2.0",
+        json={"boxes": [{"class_name": "robot", "x1_normalized": 0.1, "y1_normalized": 0.2, "x2_normalized": 0.5, "y2_normalized": 0.8}]},
+    )
+
+    class FakeCapture:
+        def __init__(self, _path):
+            pass
+
+        def set(self, *_args):
+            pass
+
+        def read(self):
+            return True, object()
+
+        def release(self):
+            pass
+
+    monkeypatch.setattr(api_module.cv2, "VideoCapture", FakeCapture)
+    monkeypatch.setattr(api_module.cv2, "imencode", lambda *_args: (True, np.frombuffer(b"frame", dtype=np.uint8)))
+    response = client.get("/api/v1/training/dataset.zip")
+
+    assert response.status_code == 200
+    with zipfile.ZipFile(BytesIO(response.content)) as archive:
+        label_path = next(name for name in archive.namelist() if name.startswith("labels/train/"))
+        assert archive.read(label_path).decode().strip() == "0 0.300000 0.500000 0.400000 0.600000"
+        assert "dataset.yaml" in archive.namelist()
 
 
 def test_video_analysis_persists_measured_metadata(monkeypatch) -> None:

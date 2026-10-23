@@ -1,23 +1,31 @@
 import logging
+import json
 import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, UploadFile
+import cv2
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Query, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from starlette.background import BackgroundTask
 from sqlalchemy import create_engine, delete, select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.models import EventAnnotation, RobotTrack, TrajectoryPoint, VideoFieldRobot, VideoUpload
+from app.models import EventAnnotation, RobotFrameLabel, RobotTrack, TrajectoryPoint, VideoFieldRobot, VideoUpload
 from app.schemas import (
     AnnotationCreate,
     AnnotationResponse,
     AnnotationUpdate,
     HealthResponse,
+    RobotBox,
+    RobotFrameLabelResponse,
+    RobotFrameLabelsUpdate,
     RobotTrackResponse,
+    RobotTrackStart,
     TrajectoryPointResponse,
     TeamDirectoryEntry,
     VideoFieldRobotResponse,
@@ -28,6 +36,7 @@ from app.schemas import (
 )
 from app.vision.detector import RobotDetection, create_robot_detector
 from app.vision.processor import VideoProcessingError, analyze_video_file
+from app.vision.seeded_tracker import SeededTrackingError, track_seeded_robot
 
 logger = logging.getLogger(__name__)
 
@@ -286,6 +295,31 @@ def get_video_file(video_id: str) -> FileResponse:
         )
 
 
+@app.get("/api/v1/videos/{video_id}/frame/{timestamp_seconds}", tags=["training"])
+def get_video_frame(video_id: str, timestamp_seconds: float) -> Response:
+    if timestamp_seconds < 0:
+        raise HTTPException(status_code=422, detail="Timestamp must not be negative.")
+    with Session(engine) as session:
+        video = session.get(VideoUpload, video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        video_path = storage_dir / video.stored_filename
+    capture = cv2.VideoCapture(str(video_path))
+    try:
+        if not capture.isOpened():
+            raise HTTPException(status_code=422, detail="Could not open this video.")
+        capture.set(cv2.CAP_PROP_POS_MSEC, timestamp_seconds * 1000)
+        success, frame = capture.read()
+        if not success:
+            raise HTTPException(status_code=404, detail="No video frame exists at this timestamp.")
+        success, encoded = cv2.imencode(".jpg", frame)
+        if not success:
+            raise HTTPException(status_code=500, detail="Could not encode the video frame.")
+        return Response(content=encoded.tobytes(), media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+    finally:
+        capture.release()
+
+
 @app.delete("/api/v1/videos/{video_id}", status_code=204, tags=["videos"])
 def delete_video(video_id: str) -> None:
     with Session(engine) as session:
@@ -293,6 +327,7 @@ def delete_video(video_id: str) -> None:
         if video is None:
             raise HTTPException(status_code=404, detail="Video was not found.")
         session.execute(delete(EventAnnotation).where(EventAnnotation.video_id == video_id))
+        session.execute(delete(RobotFrameLabel).where(RobotFrameLabel.video_id == video_id))
         (storage_dir / video.stored_filename).unlink(missing_ok=True)
         session.delete(video)
         session.commit()
@@ -397,6 +432,7 @@ def persist_robot_tracks(
     confidence_threshold: float,
     width: int,
     height: int,
+    detection_source: str = "model",
 ) -> None:
     tracks_by_source_id: dict[str, RobotTrack] = {}
     for detection in detections:
@@ -406,7 +442,7 @@ def persist_robot_tracks(
                 video_id=video_id,
                 source_track_id=detection.track_id,
                 class_name=detection.class_name,
-                detection_source="model",
+                detection_source=detection_source,
                 model_name=model_name,
                 model_version=model_version,
                 confidence_threshold=confidence_threshold,
@@ -480,7 +516,7 @@ def get_video_tracks(video_id: str) -> VideoTracksResponse:
                     id=track.id,
                     source_track_id=track.source_track_id,
                     class_name=track.class_name,
-                    detection_source="model",
+                    detection_source=track.detection_source,
                     model_name=track.model_name,
                     model_version=track.model_version,
                     confidence_threshold=track.confidence_threshold,
@@ -501,6 +537,233 @@ def get_video_tracks(video_id: str) -> VideoTracksResponse:
                 for track in tracks
             ],
         )
+
+
+@app.get(
+    "/api/v1/videos/{video_id}/robot-labels",
+    response_model=list[RobotFrameLabelResponse],
+    tags=["training"],
+)
+def list_robot_labels(video_id: str) -> list[RobotFrameLabelResponse]:
+    with Session(engine) as session:
+        if session.get(VideoUpload, video_id) is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        labels = session.scalars(
+            select(RobotFrameLabel)
+            .where(RobotFrameLabel.video_id == video_id)
+            .order_by(RobotFrameLabel.timestamp_seconds, RobotFrameLabel.class_name)
+        ).all()
+        return [RobotFrameLabelResponse.model_validate(label, from_attributes=True) for label in labels]
+
+
+@app.put(
+    "/api/v1/videos/{video_id}/robot-labels/{timestamp_seconds}",
+    response_model=list[RobotFrameLabelResponse],
+    tags=["training"],
+)
+def save_robot_frame_labels(
+    video_id: str,
+    timestamp_seconds: float,
+    payload: RobotFrameLabelsUpdate,
+) -> list[RobotFrameLabelResponse]:
+    if timestamp_seconds < 0:
+        raise HTTPException(status_code=422, detail="Timestamp must not be negative.")
+    with Session(engine) as session:
+        video = session.get(VideoUpload, video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        if video.duration_seconds is not None and timestamp_seconds > video.duration_seconds:
+            raise HTTPException(status_code=422, detail="Timestamp is outside the video duration.")
+        session.execute(
+            delete(RobotFrameLabel).where(
+                RobotFrameLabel.video_id == video_id,
+                RobotFrameLabel.timestamp_seconds == timestamp_seconds,
+            )
+        )
+        labels = [
+            RobotFrameLabel(video_id=video_id, timestamp_seconds=timestamp_seconds, **box.model_dump())
+            for box in payload.boxes
+        ]
+        session.add_all(labels)
+        session.commit()
+        for label in labels:
+            session.refresh(label)
+        return [RobotFrameLabelResponse.model_validate(label, from_attributes=True) for label in labels]
+
+
+@app.post(
+    "/api/v1/videos/{video_id}/robot-labels/{timestamp_seconds}/track",
+    response_model=RobotTrackResponse,
+    tags=["analysis"],
+)
+def start_seeded_robot_tracking(
+    video_id: str,
+    timestamp_seconds: float,
+    payload: RobotTrackStart,
+) -> RobotTrackResponse:
+    if timestamp_seconds < 0:
+        raise HTTPException(status_code=422, detail="Timestamp must not be negative.")
+    with Session(engine) as session:
+        video = session.get(VideoUpload, video_id)
+        if video is None:
+            raise HTTPException(status_code=404, detail="Video was not found.")
+        video_path = storage_dir / video.stored_filename
+        duration_seconds = video.duration_seconds
+    if not video_path.is_file():
+        raise HTTPException(status_code=404, detail="Stored video file is missing.")
+    if duration_seconds is not None and timestamp_seconds > duration_seconds:
+        raise HTTPException(status_code=422, detail="Timestamp is outside the video duration.")
+
+    try:
+        detections, width, height, source_track_id = track_seeded_robot(
+            video_path,
+            timestamp_seconds,
+            (payload.x1_normalized, payload.y1_normalized, payload.x2_normalized, payload.y2_normalized),
+            payload.class_name,
+        )
+    except SeededTrackingError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    with Session(engine) as session:
+        persist_robot_tracks(
+            session,
+            video_id,
+            detections,
+            "OpenCV TrackerMIL (user-seeded)",
+            cv2.__version__,
+            0.0,
+            width,
+            height,
+            detection_source="seeded_tracker",
+        )
+        session.commit()
+        track = session.scalar(
+            select(RobotTrack).where(
+                RobotTrack.video_id == video_id,
+                RobotTrack.source_track_id == source_track_id,
+            )
+        )
+        if track is None:
+            raise HTTPException(status_code=500, detail="The tracked robot could not be saved.")
+        return RobotTrackResponse(
+            id=track.id,
+            source_track_id=track.source_track_id,
+            class_name=track.class_name,
+            detection_source="seeded_tracker",
+            model_name=track.model_name,
+            model_version=track.model_version,
+            confidence_threshold=track.confidence_threshold,
+            points=[
+                TrajectoryPointResponse(
+                    timestamp_seconds=point.timestamp_seconds,
+                    x_normalized=point.x_normalized,
+                    y_normalized=point.y_normalized,
+                    x1_normalized=point.x1_normalized,
+                    y1_normalized=point.y1_normalized,
+                    x2_normalized=point.x2_normalized,
+                    y2_normalized=point.y2_normalized,
+                    confidence=point.confidence,
+                )
+                for point in sorted(track.points, key=lambda item: item.timestamp_seconds)
+            ],
+        )
+
+
+@app.get("/api/v1/training/dataset.zip", tags=["training"])
+def export_robot_dataset() -> FileResponse:
+    with Session(engine) as session:
+        labels = session.scalars(
+            select(RobotFrameLabel).order_by(RobotFrameLabel.video_id, RobotFrameLabel.timestamp_seconds)
+        ).all()
+        videos = {
+            video.id: storage_dir / video.stored_filename
+            for video in session.scalars(select(VideoUpload)).all()
+        }
+        label_rows = [
+            {
+                "video_id": label.video_id,
+                "timestamp_seconds": label.timestamp_seconds,
+                "class_name": label.class_name,
+                "x1": label.x1_normalized,
+                "y1": label.y1_normalized,
+                "x2": label.x2_normalized,
+                "y2": label.y2_normalized,
+            }
+            for label in labels
+        ]
+
+    if not label_rows:
+        raise HTTPException(status_code=409, detail="Label robot boxes in video frames before exporting a dataset.")
+
+    class_names = sorted({label["class_name"] for label in label_rows})
+    class_ids = {name: index for index, name in enumerate(class_names)}
+    frames: dict[tuple[str, float], list[dict[str, object]]] = {}
+    for label in label_rows:
+        key = (str(label["video_id"]), float(label["timestamp_seconds"]))
+        frames.setdefault(key, []).append(label)
+
+    archive_path = storage_dir / f"training-dataset-{uuid.uuid4()}.zip"
+    try:
+        with zipfile.ZipFile(archive_path, "w", zipfile.ZIP_DEFLATED) as archive:
+            frame_keys = sorted(frames)
+            video_ids = sorted({video_id for video_id, _ in frame_keys})
+            validation_video_ids = {video_ids[-1]} if len(video_ids) >= 2 else set()
+            for frame_index, key in enumerate(frame_keys):
+                video_path = videos.get(key[0])
+                if video_path is None or not video_path.is_file():
+                    continue
+                capture = cv2.VideoCapture(str(video_path))
+                try:
+                    capture.set(cv2.CAP_PROP_POS_MSEC, key[1] * 1000)
+                    success, frame = capture.read()
+                    if not success:
+                        continue
+                    success, encoded = cv2.imencode(".jpg", frame)
+                    if not success:
+                        continue
+                finally:
+                    capture.release()
+
+                split = "val" if key[0] in validation_video_ids else "train"
+                stem = f"{frame_index:06d}"
+                archive.writestr(f"images/{split}/{stem}.jpg", encoded.tobytes())
+                lines = []
+                for label in frames[key]:
+                    width = float(label["x2"]) - float(label["x1"])
+                    height = float(label["y2"]) - float(label["y1"])
+                    center_x = float(label["x1"]) + width / 2
+                    center_y = float(label["y1"]) + height / 2
+                    lines.append(
+                        f"{class_ids[str(label['class_name'])]} {center_x:.6f} {center_y:.6f} {width:.6f} {height:.6f}"
+                    )
+                archive.writestr(f"labels/{split}/{stem}.txt", "\n".join(lines) + "\n")
+
+            if not any(name.startswith("images/train/") for name in archive.namelist()):
+                raise HTTPException(status_code=422, detail="No labeled frames could be decoded from the videos.")
+            dataset_yaml = {
+                "path": ".",
+                "train": "images/train",
+                "val": "images/val" if validation_video_ids else "images/train",
+                "names": class_names,
+            }
+            archive.writestr("dataset.yaml", "# Small datasets reuse training frames for validation.\n" + "\n".join(
+                [f"path: {json.dumps(dataset_yaml['path'])}", f"train: {json.dumps(dataset_yaml['train'])}",
+                 f"val: {json.dumps(dataset_yaml['val'])}", f"names: {json.dumps(dataset_yaml['names'])}"]
+            ) + "\n")
+    except HTTPException:
+        archive_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        archive_path.unlink(missing_ok=True)
+        logger.exception("Robot dataset export failed")
+        raise HTTPException(status_code=500, detail="Could not export the robot training dataset.")
+
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename="matchlens-robot-dataset.zip",
+        background=BackgroundTask(archive_path.unlink, missing_ok=True),
+    )
 
 
 @app.get(
